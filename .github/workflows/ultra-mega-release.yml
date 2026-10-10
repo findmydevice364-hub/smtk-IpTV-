@@ -1,0 +1,105 @@
+name: Ultra-Mega IPTV Release
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3 * * *"
+  push:
+    paths:
+      - "ultra_mega_iptv.py"
+      - "sources.txt"
+      - "Extra_channels.m3u"
+      - ".github/workflows/ultra-mega-release.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  scan-and-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install aiohttp
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg || true
+
+      - name: Run Ultra-Mega scanner
+        env:
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python ultra_mega_iptv.py \
+            --output ./iptv_output \
+            --release-dir ./release \
+            --passes 1 \
+            --workers 64 \
+            --alt-workers 48 \
+            --source-workers 64 \
+            --timeout 12 \
+            --source-timeout 30 \
+            --min-alternatives 6 \
+            --alternative-candidates 50 \
+            --ops-per-second 64 \
+            --similarity 0.60 \
+            --ffprobe \
+            ${{ hashFiles('sources.txt') != '' && '--source-list ./sources.txt' || '' }}
+
+      - name: Stage release into repo tree
+        run: |
+          mkdir -p release
+          # Корень репозитория: актуальные плейлисты
+          cp -f release/playlists/*.m3u . 2>/dev/null || true
+          cp -f release/extra/*.m3u . 2>/dev/null || true
+          # Полное дерево release/ остаётся в репо
+          ls -la release/ || true
+          ls -la release/playlists/ || true
+          test -f release/RELEASE_MANIFEST.json && cat release/RELEASE_MANIFEST.json || true
+
+      - name: Commit release files to repository
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add release/ || true
+          git add *.m3u 2>/dev/null || true
+          git add Ultra_Extra_channels.m3u Extra_channels.m3u Stable.m3u Mega.m3u Ultra.m3u Russia.m3u best.m3u online.m3u 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "No release changes to commit"
+          else
+            git commit -m "release: ultra-mega IPTV update $(date -u +%Y-%m-%dT%H:%MZ)"
+            git push
+          fi
+
+      - name: Create GitHub Release with all files
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ultra-mega-${{ github.run_number }}
+          name: Ultra-Mega IPTV ${{ github.run_number }}
+          body_path: release/README.md
+          files: |
+            release/playlists/*
+            release/extra/*
+            release/telemetry/*
+            release/reports/*
+            release/ml/*
+            release/RELEASE_MANIFEST.json
+            release/README.md
+          fail_on_unmatched_files: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload artifacts (CI backup)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ultra-mega-release
+          path: |
+            release/**
+            iptv_output/**
